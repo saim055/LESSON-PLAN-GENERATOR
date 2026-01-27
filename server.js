@@ -20,7 +20,10 @@ app.use(express.json({ limit: "50mb" }));
 const upload = multer({ dest: 'uploads/' });
 
 // ================= AI CLIENT =================
-const client = new OpenAI(); // API key is automatically picked up from process.env.OPENAI_API_KEY
+const client = new OpenAI({
+  baseURL: "https://router.huggingface.co/v1",
+  apiKey: process.env.HUGGINGFACE_API_KEY
+});
 
 // ================= HELPER FUNCTIONS =================
 
@@ -458,7 +461,7 @@ Return ONLY valid JSON - no explanations, no markdown, just the JSON object.`;
   console.log('Calling AI with Expert Prompt...');
   
   const completion = await client.chat.completions.create({
-    model: "gemini-2.5-flash",
+    model: "meta-llama/Llama-3.1-70B-Instruct",
     messages: [
       { role: "system", content: EXPERT_SYSTEM_PROMPT },
       { role: "user", content: userPrompt }
