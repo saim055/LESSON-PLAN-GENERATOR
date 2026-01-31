@@ -6,16 +6,19 @@ const cors = require("cors");
 const multer = require("multer");
 const pdf = require("pdf-parse");
 const mammoth = require("mammoth");
-const OpenAI = require("openai");
 const PizZip = require("pizzip");
 const Docxtemplater = require("docxtemplater");
 require("dotenv").config();
 
 // Environment variable debugging
+console.log('=== STARTUP DEBUG ===');
 console.log('Environment Variables:');
 console.log('GROQ_API_KEY present:', !!process.env.GROQ_API_KEY);
 console.log('GROQ_API_KEY length:', process.env.GROQ_API_KEY?.length || 0);
 console.log('PORT:', process.env.PORT || 'default');
+console.log('NODE_ENV:', process.env.NODE_ENV || 'development');
+console.log('Working directory:', __dirname);
+console.log('=== END STARTUP DEBUG ===');
 
 // ================= APP SETUP =================
 const app = express();
@@ -679,28 +682,47 @@ app.post('/api/generate-lesson', upload.single('file'), async (req, res) => {
 
     // Validate required fields
     if (!grade || !subject || !topic || !lessonLevel) {
-      return res.status(400).json({ error: "Missing required fields: grade, subject, topic, or level" });
+      console.error('Validation failed: Missing required fields');
+      return res.status(400).json({ 
+        error: "Missing required fields: grade, subject, topic, or level",
+        received: { grade, subject, topic, lessonLevel }
+      });
     }
 
     // Extract file content if uploaded
     let fileContent = '';
     if (req.file) {
       console.log('Processing uploaded file:', req.file.originalname);
-      fileContent = await extractFileContent(req.file.path);
-      fs.unlinkSync(req.file.path);
+      try {
+        fileContent = await extractFileContent(req.file.path);
+        fs.unlinkSync(req.file.path);
+      } catch (fileError) {
+        console.error('File processing error:', fileError);
+        // Continue without file content
+      }
     }
 
     // Generate lesson with AI
     console.log('Generating expert lesson plan...');
-    const aiData = await generateExpertLesson({
-      grade,
-      subject,
-      topic,
-      level: lessonLevel,
-      standardType: standardType || 'NGSS + AP College Board',
-      fileContent,
-      giftedTalented
-    });
+    let aiData;
+    try {
+      aiData = await generateExpertLesson({
+        grade,
+        subject,
+        topic,
+        level: lessonLevel,
+        standardType: standardType || 'NGSS + AP College Board',
+        fileContent,
+        giftedTalented
+      });
+    } catch (aiError) {
+      console.error('AI generation failed:', aiError.message);
+      return res.status(500).json({
+        error: 'AI generation failed',
+        details: aiError.message,
+        stack: process.env.NODE_ENV === 'development' ? aiError.stack : undefined
+      });
+    }
 
     console.log('AI Generation Complete');
     console.log('Objectives:', aiData.objectives?.length || 0);
@@ -828,10 +850,9 @@ app.post('/api/generate-lesson', upload.single('file'), async (req, res) => {
     
     console.log('Looking for template at:', templatePath);
     console.log('Template exists:', fs.existsSync(templatePath));
-    console.log('Directory contents:', fs.readdirSync(__dirname));
     
     if (!fs.existsSync(templatePath)) {
-      console.error('Template file not found. Available files:', fs.readdirSync(__dirname));
+      console.error('Template file not found');
       return res.status(500).json({ 
         error: 'Template file not found', 
         details: `Template not found at: ${templatePath}`,
@@ -842,33 +863,50 @@ app.post('/api/generate-lesson', upload.single('file'), async (req, res) => {
 
     console.log('Loading template from:', templatePath);
     
-    const templateContent = fs.readFileSync(templatePath);
-    const zip = new PizZip(templateContent);
-    const doc = new Docxtemplater(zip, {
-      paragraphLoop: true,
-      linebreaks: true,
-    });
+    let templateContent, zip, doc;
+    try {
+      templateContent = fs.readFileSync(templatePath);
+      zip = new PizZip(templateContent);
+      doc = new Docxtemplater(zip, {
+        paragraphLoop: true,
+        linebreaks: true,
+      });
+    } catch (templateError) {
+      console.error('Template loading error:', templateError);
+      return res.status(500).json({
+        error: 'Failed to load template',
+        details: templateError.message
+      });
+    }
 
     // Render template
     console.log('Rendering template with AI data...');
-    doc.setData(templateData);
-    
     try {
+      doc.setData(templateData);
       doc.render();
-    } catch (error) {
-      console.error('Template render error:', error);
+    } catch (renderError) {
+      console.error('Template render error:', renderError);
       return res.status(500).json({ 
         error: 'Failed to render template', 
-        details: error.message,
-        properties: error.properties
+        details: renderError.message,
+        properties: renderError.properties
       });
     }
 
     // Generate buffer
-    const buffer = doc.getZip().generate({
-      type: 'nodebuffer',
-      compression: 'DEFLATE',
-    });
+    let buffer;
+    try {
+      buffer = doc.getZip().generate({
+        type: 'nodebuffer',
+        compression: 'DEFLATE',
+      });
+    } catch (bufferError) {
+      console.error('Buffer generation error:', bufferError);
+      return res.status(500).json({
+        error: 'Failed to generate document',
+        details: bufferError.message
+      });
+    }
 
     console.log('Document generated successfully');
     console.log('File size:', buffer.length, 'bytes');
@@ -878,19 +916,34 @@ app.post('/api/generate-lesson', upload.single('file'), async (req, res) => {
     res.setHeader('Content-Disposition', `attachment; filename="Lesson_Plan_G${grade}_${subject}_${topic.replace(/\s+/g, '_')}.docx"`);
     res.send(buffer);
 
-    console.log('========== LESSON GENERATION COMPLETE ==========\n');
-
-  } catch (error) {
-    console.error('========== ERROR ==========');
-    console.error('Error:', error.message);
-    console.error('Stack:', error.stack);
-    console.error('===========================\n');
+    console.log('========== LESSON GENERATION COMPLETE ==========');
     
-    res.status(500).json({ 
-      error: 'Lesson generation failed', 
-      details: error.message 
+  } catch (error) {
+    console.error('Unexpected error in lesson generation:', error);
+    res.status(500).json({
+      error: 'Internal server error',
+      details: error.message,
+      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
     });
   }
+});
+
+// ================= ERROR HANDLING MIDDLEWARE =================
+
+app.use((error, req, res, next) => {
+  console.error('Unhandled error:', error);
+  res.status(500).json({
+    error: 'Internal server error',
+    details: process.env.NODE_ENV === 'development' ? error.message : 'Something went wrong'
+  });
+});
+
+// 404 handler
+app.use((req, res) => {
+  res.status(404).json({
+    error: 'Not found',
+    message: `Route ${req.method} ${req.path} not found`
+  });
 });
 
 // Test endpoint
