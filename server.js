@@ -41,6 +41,75 @@ const client = new Groq({
   apiKey: process.env.GROQ_API_KEY
 });
 
+// ================= MULTI-MODEL FALLBACK SYSTEM =================
+// Models ordered by capability (best first). On rate limit, rotates to next.
+const MODEL_QUEUE = [
+  "meta-llama/llama-4-scout-17b-16e-instruct", // Best: fast, large context, latest
+  "llama-3.3-70b-versatile",                    // Excellent quality, widely tested
+  "qwen/qwen3-32b",                             // Strong reasoning, good fallback
+  "qwen/qwen3.6-27b",                           // Good quality, slightly smaller
+  "openai/gpt-oss-120b",                        // Largest available, use if others rate-limited
+  "openai/gpt-oss-20b",                         // Lighter OpenAI-based model
+  "llama-3.1-8b-instant",                       // Fast and lightweight, last resort
+];
+
+// Track per-model cooldown timestamps
+const modelCooldowns = {};
+
+function markModelRateLimited(model) {
+  modelCooldowns[model] = Date.now() + 60 * 1000; // 60 second cooldown
+  console.log(`⚠️  Model [${model}] rate limited. Cooling down for 60s.`);
+}
+
+async function callAIWithFallback(systemPrompt, userPrompt) {
+  let lastError = null;
+
+  for (const model of MODEL_QUEUE) {
+    const now = Date.now();
+    const cooldownUntil = modelCooldowns[model] || 0;
+    if (now < cooldownUntil) {
+      console.log(`⏭️  Skipping [${model}] — cooling down for ${Math.ceil((cooldownUntil - now) / 1000)}s more`);
+      continue;
+    }
+
+    console.log(`🤖 Trying model: [${model}]`);
+    try {
+      const completion = await client.chat.completions.create({
+        model: model,
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: userPrompt }
+        ],
+        temperature: 0.7,
+        max_tokens: 8000,
+        response_format: { type: "json_object" }
+      });
+
+      const content = completion.choices[0]?.message?.content;
+      if (content) {
+        console.log(`✅ Success with model: [${model}]`);
+        return { content, model };
+      }
+
+    } catch (err) {
+      lastError = err;
+      const errMsg = err.message || '';
+      const isRateLimit = err.status === 429 || errMsg.toLowerCase().includes('rate limit') || errMsg.toLowerCase().includes('too many');
+
+      if (isRateLimit) {
+        markModelRateLimited(model);
+        console.log(`🔄 Falling back to next model...`);
+        continue;
+      }
+
+      console.error(`❌ Error with model [${model}]:`, errMsg);
+      continue;
+    }
+  }
+
+  throw new Error(`All models exhausted. Last error: ${lastError?.message || 'Unknown error'}`);
+}
+
 // ================= HELPER FUNCTIONS =================
 
 // Safe string conversion
@@ -812,43 +881,24 @@ CRITICAL REQUIREMENTS FOR DEPTH & DIFFERENTIATION:
 
 Generate the complete lesson plan following the JSON format specified.`;
 
-    console.log('\n=== CALLING AI API ===');
-    console.log('Prompt length:', userPrompt.length, 'characters');
+    console.log('\n=== CALLING AI API WITH FALLBACK SYSTEM ===');
 
-    // Call AI API
-    let aiResponse;
+    // Call AI with multi-model fallback
+    let aiResponse, modelUsed;
     try {
-      const completion = await client.chat.completions.create({
-        model: "llama-3.3-70b-versatile",
-        messages: [
-          {
-            role: "system",
-            content: EXPERT_SYSTEM_PROMPT
-          },
-          {
-            role: "user",
-            content: userPrompt
-          }
-        ],
-        temperature: 0.7,
-        max_tokens: 8000,
-        response_format: { type: "json_object" }
-      });
-
-      aiResponse = completion.choices[0]?.message?.content;
-      console.log('AI response received:', aiResponse ? 'YES' : 'NO');
-      console.log('Response length:', aiResponse?.length || 0, 'characters');
-
+      const result = await callAIWithFallback(EXPERT_SYSTEM_PROMPT, userPrompt);
+      aiResponse = result.content;
+      modelUsed = result.model;
+      console.log(`✅ Lesson generated using model: [${modelUsed}]`);
     } catch (apiError) {
-      console.error('AI API Error:', apiError);
+      console.error('All AI models failed:', apiError);
       return res.status(500).json({
-        error: 'AI generation failed',
+        error: 'AI generation failed — all models exhausted',
         details: apiError.message
       });
     }
 
     if (!aiResponse) {
-      console.error('No AI response received');
       return res.status(500).json({
         error: 'No response from AI',
         details: 'The AI did not generate any content'
@@ -1046,7 +1096,11 @@ app.get('/api/test', (req, res) => {
   res.json({ 
     status: 'OK', 
     message: 'Enhanced Expert Lesson Plan Server is running',
-    timestamp: new Date().toISOString() 
+    timestamp: new Date().toISOString(),
+    models: MODEL_QUEUE,
+    modelCooldowns: Object.fromEntries(
+      Object.entries(modelCooldowns).map(([k, v]) => [k, v > Date.now() ? `cooling (${Math.ceil((v - Date.now()) / 1000)}s)` : 'available'])
+    )
   });
 });
 
@@ -1076,7 +1130,7 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log('═══════════════════════════════════════════════');
   console.log(`🚀 Server running on http://localhost:${PORT}`);
   console.log(`📁 Template: ${path.join(__dirname, 'LESSON PLAN TEMPLATE.docx')}`);
-  console.log(`🤖 AI: Groq llama-3.3-70b-versatile`);
+  console.log(`🤖 AI: Multi-Model Fallback System (${MODEL_QUEUE.length} models)`);
   console.log(`✨ Features: SMART Objectives, Exact Standards, Student-Centered`);
   console.log('═══════════════════════════════════════════════\n');
 });
