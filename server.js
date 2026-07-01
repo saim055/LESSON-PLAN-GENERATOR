@@ -43,13 +43,13 @@ const client = new Groq({
 
 // ================= MULTI-MODEL FALLBACK SYSTEM (Rate Limit Solution) =================
 const MODEL_QUEUE = [
-  "meta-llama/llama-4-scout-17b-16e-instruct",
-  "llama-3.3-70b-versatile",
-  "qwen/qwen3-32b",
-  "qwen/qwen3.6-27b",
-  "llama-3.1-70b-versatile",
-  "openai/gpt-oss-120b",
-  "llama-3.1-8b-instant"
+  "llama-3.3-70b-versatile",      // Most stable large model – try first
+  "llama-3.1-70b-versatile",      // Reliable alternative
+  "qwen/qwen3-32b",               // Good performance, less traffic
+  "llama-3.1-8b-instant",         // Fast fallback when speed matters
+  "openai/gpt-oss-120b",          // Optional – may have its own limits
+  "meta-llama/llama-4-scout-17b-16e-instruct", // Newer, might be experimental
+  "qwen/qwen3.6-27b"              // Newest qwen – use only as last resort
 ];
 
 // In-memory model cooldown timers (cooldown expires at this timestamp)
